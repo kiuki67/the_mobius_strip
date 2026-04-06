@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>3D Лента Мёбиуса - Three.js</title>
+    <style>
+        body { margin: 0; overflow: hidden; font-family: 'Segoe UI', 'Montserrat', sans-serif; }
+        #info {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: white;
+            background: rgba(0,0,0,0.6);
+            padding: 8px 16px;
+            border-radius: 8px;
+            backdrop-filter: blur(5px);
+            pointer-events: none;
+            z-index: 10;
+            font-size: 14px;
+            letter-spacing: 1px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+            border-left: 3px solid #ff3366;
+        }
+        #controls-hint {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            color: rgba(255,255,255,0.6);
+            background: rgba(0,0,0,0.4);
+            padding: 4px 12px;
+            border-radius: 6px;
+            font-size: 12px;
+            pointer-events: none;
+            font-family: monospace;
+        }
+        @media (max-width: 600px) {
+            #info { font-size: 10px; top: 10px; left: 10px; }
+            #controls-hint { font-size: 8px; }
+        }
+    </style>
+</head>
+<body>
+    <div id="info">
+        <strong>✨ Лента Мёбиуса</strong> | Непрерывная односторонняя поверхность
+    </div>
+    <div id="controls-hint">
+        🖱️ Мышь: вращение | ПКМ: панорамирование | Прокрутка: масштаб
+    </div>
+
+    <!-- Подключаем Three.js и дополнительные модули (OrbitControls, GLTFLoader не нужны, но OrbitControls полезен) -->
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.128.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.128.0/examples/jsm/"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
+
+        // --- Инициализация сцены, камеры, рендереров ---
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x050b1a); // темный космический фон
+        scene.fog = new THREE.FogExp2(0x050b1a, 0.008); // легкий туман для глубины
+
+        // Перспективная камера
+        const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(2.5, 1.8, 3.5);
+        camera.lookAt(0, 0, 0);
+
+        // WebGL рендерер
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        renderer.shadowMap.enabled = true; // включим тени для эффекта (хотя у нас в основном самосветящийся материал)
+        renderer.setClearColor(0x050b1a, 1);
+        document.body.appendChild(renderer.domElement);
+
+        // CSS2 рендерер для текста (легкий и красивый)
+        const labelRenderer = new CSS2DRenderer();
+        labelRenderer.setSize(window.innerWidth, window.innerHeight);
+        labelRenderer.domElement.style.position = 'absolute';
+        labelRenderer.domElement.style.top = '0px';
+        labelRenderer.domElement.style.left = '0px';
+        labelRenderer.domElement.style.pointerEvents = 'none';
+        document.body.appendChild(labelRenderer.domElement);
+
+        // --- Орбит контролы для удобного обзора ---
+        const controls = new OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;      // плавность инерции
+        controls.dampingFactor = 0.05;
+        controls.rotateSpeed = 1.2;
+        controls.zoomSpeed = 1.2;
+        controls.panSpeed = 0.8;
+        controls.enableZoom = true;
+        controls.autoRotate = true;
+        controls.autoRotateSpeed = 1.2;
+        controls.enablePan = true;
+        controls.target.set(0, 0, 0);
+
+        // --- Освещение: создаем атмосферу, чтобы лента переливалась ---
+        
+        // Ambient light - мягкий свет
+        const ambientLight = new THREE.AmbientLight(0x404060);
+        scene.add(ambientLight);
+        
+        // Основной направленный свет сверху
+        const dirLight = new THREE.DirectionalLight(0xffffff, 1);
+        dirLight.position.set(1, 2, 1);
+        dirLight.castShadow = true;
+        dirLight.receiveShadow = false;
+        scene.add(dirLight);
+        
+        // Дополнительный цветной свет снизу для создания переливов
+        const fillLight = new THREE.PointLight(0x4466cc, 0.4);
+        fillLight.position.set(0, -1.2, 0);
+        scene.add(fillLight);
+        
+        // Теплый контровой свет сзади
+        const backLight = new THREE.PointLight(0xffaa66, 0.5);
+        backLight.position.set(-0.8, 0.5, -1.5);
+        scene.add(backLight);
+        
+        // Динамический вращающийся цветной свет для акцента (эффект "живой" ленты)
+        const colorLight = new THREE.PointLight(0xff33aa, 0.6);
+        colorLight.position.set(0.8, 0.3, 0.6);
+        scene.add(colorLight);
+        
+        // --- Создание геометрии ленты Мёбиуса ---
+        // Параметры:
+        // R - большой радиус (радиус центральной окружности)
+        // w - ширина ленты (половина полной ширины, т.к. параметр v от -w до w)
+        // segmentsU - количество сегментов по окружности (точность вдоль кольца)
+        // segmentsV - количество сегментов по ширине ленты
+        
+        const R = 1.2;
+        const width = 0.65;   // полная ширина ленты от -width/2 до width/2? но для удобства: параметр v от -0.6 до 0.6
+        const halfWidth = width / 2; // 0.325, но сделаем чуть шире для эффектности: 0.45
+        const effectiveHalfWidth = 0.48;
+        
+        const segmentsU = 180;   // количество точек по окружности (чем больше, тем плавнее)
+        const segmentsV = 32;    // количество полосок по ширине
+        
+        // Создаем буферную геометрию вручную
+        const geometry = new THREE.BufferGeometry();
+        
+        const vertices = [];
+        const indices = [];
+        const normals = [];
+        
+        // Функция для вычисления точки на ленте Мёбиуса:
+        // u - угол вдоль окружности (0 до 2PI)
+        // v - параметр ширины (-halfWidth ... +halfWidth)
+        function mobiusPoint(u, v) {
+            // Радиус центральной линии
+            const r = R + v * Math.cos(u / 2);
+            const x = r * Math.cos(u);
+            const z = r * Math.sin(u);
+            const y = v * Math.sin(u / 2);
+            return new THREE.Vector3(x, y, z);
+        }
+        
+        // Вычисляем вершины и нормали (приближенные через дифференциалы)
+        // Сначала заполняем массив вершин в порядке (u индекс, v индекс)
+        for (let i = 0; i <= segmentsU; i++) {
+            const u = (i / segmentsU) * Math.PI * 2;
+            for (let j = 0; j <= segmentsV; j++) {
+                const v = -effectiveHalfWidth + (j / segmentsV) * (2 * effectiveHalfWidth);
+                const pos = mobiusPoint(u, v);
+                vertices.push(pos.x, pos.y, pos.z);
+            }
+        }
+        
+        // Заполняем индексы для треугольников (два треугольника на каждый прямоугольный сегмент)
+        for (let i = 0; i < segmentsU; i++) {
+            for (let j = 0; j < segmentsV; j++) {
+                // Индексы вершин в сетке
+                const a = i * (segmentsV + 1) + j;
+                const b = i * (segmentsV + 1) + j + 1;
+                const c = (i + 1) * (segmentsV + 1) + j;
+                const d = (i + 1) * (segmentsV + 1) + j + 1;
+                
+                // Первый треугольник (a - b - c)
+                indices.push(a, b, c);
+                // Второй треугольник (b - d - c)
+                indices.push(b, d, c);
+            }
+        }
+        
+        // Вычисление нормалей: для каждого треугольника вычисляем нормаль, затем усредняем по вершинам.
+        // Создаем массив для накопления нормалей
+        const tempNormals = new Array(vertices.length / 3).fill().map(() => new THREE.Vector3(0, 0, 0));
+        
+        // Проходим по индексам треугольников
+        for (let i = 0; i < indices.length; i += 3) {
+            const i1 = indices[i];
+            const i2 = indices[i+1];
+            const i3 = indices[i+2];
+            
+            const p1 = new THREE.Vector3(vertices[i1*3], vertices[i1*3+1], vertices[i1*3+2]);
+            const p2 = new THREE.Vector3(vertices[i2*3], vertices[i2*3+1], vertices[i2*3+2]);
+            const p3 = new THREE.Vector3(vertices[i3*3], vertices[i3*3+1], vertices[i3*3+2]);
+            
+            const edge1 = new THREE.Vector3().subVectors(p2, p1);
+            const edge2 = new THREE.Vector3().subVectors(p3, p1);
+            const faceNormal = new THREE.Vector3().crossVectors(edge1, edge2).normalize();
+            
+            // Добавляем нормаль к каждой вершине треугольника
+            tempNormals[i1].add(faceNormal);
+            tempNormals[i2].add(faceNormal);
+            tempNormals[i3].add(faceNormal);
+        }
+        
+        // Нормализуем накопленные нормали и сохраняем в массив
+        for (let i = 0; i < tempNormals.length; i++) {
+            tempNormals[i].normalize();
+            normals.push(tempNormals[i].x, tempNormals[i].y, tempNormals[i].z);
+        }
+        
+        // Записываем атрибуты в геометрию
+        geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(vertices), 3));
+        geometry.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(normals), 3));
+        geometry.setIndex(indices);
+        
+        // Дополнительно: вычисляем UV координаты для возможной текстуры (не обязательно, но добавим для эффекта градиента)
+        const uvs = [];
+        for (let i = 0; i <= segmentsU; i++) {
+            const u = i / segmentsU; // 0..1 по окружности
+            for (let j = 0; j <= segmentsV; j++) {
+                const v = j / segmentsV; // 0..1 по ширине
+                uvs.push(u, v);
+            }
+        }
+        geometry.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(uvs), 2));
+        
+        // --- Создание материала с динамическим переливом и свечением ---
+        // Используем MeshStandardMaterial с картой окружения для глянца + эмиссивный цвет
+        
+        // Создаем текстуру градиента для создания эффекта перелива по длине ленты
+        const canvasGrad = document.createElement('canvas');
+        canvasGrad.width = 512;
+        canvasGrad.height = 64;
+        const ctx = canvasGrad.getContext('2d');
+        const gradient = ctx.createLinearGradient(0, 0, canvasGrad.width, 0);
+        gradient.addColorStop(0, '#ff3366');
+        gradient.addColorStop(0.2, '#ff44cc');
+        gradient.addColorStop(0.4, '#aa44ff');
+        gradient.addColorStop(0.6, '#33ccff');
+        gradient.addColorStop(0.8, '#33ffaa');
+        gradient.addColorStop(1, '#ffaa33');
+        ctx.fillStyle = gradient;
+        ctx.fillRect(0, 0, canvasGrad.width, canvasGrad.height);
+        // Добавим немного шума для текстуры
+        ctx.globalCompositeOperation = 'overlay';
+        for(let i = 0; i < 600; i++) {
+            ctx.fillStyle = `rgba(255,255,255,${Math.random() * 0.3})`;
+            ctx.fillRect(Math.random() * canvasGrad.width, Math.random() * canvasGrad.height, 2, 2);
+        }
+        const gradientTexture = new THREE.CanvasTexture(canvasGrad);
+        gradientTexture.wrapS = THREE.RepeatWrapping;
+        gradientTexture.wrapT = THREE.RepeatWrapping;
+        gradientTexture.repeat.set(2, 1); // повтор по длине ленты
+        
+        // Материал для ленты: яркий, металлический, с эмиссией
+        const material = new THREE.MeshStandardMaterial({
+            map: gradientTexture,
+            roughness: 0.35,
+            metalness: 0.85,
+            emissive: new THREE.Color(0x331144),
+            emissiveIntensity: 0.45,
+            side: THREE.DoubleSide,   // важно для ленты Мёбиуса, чтобы видно было обе стороны
+            flatShading: false,
+            transparent: true,
+            opacity: 0.98
+        });
+        
+        const mobiusMesh = new THREE.Mesh(geometry, material);
+        mobiusMesh.castShadow = true;
+        mobiusMesh.receiveShadow = false; // чтобы сэкономить ресурсы, но тени красиво падают на фон? фон не принимает, ок.
+        scene.add(mobiusMesh);
+        
+        // --- Добавляем каркасную сетку для дополнительного визуального эффекта (Wireframe) ---
+        // Создаем материал для каркаса (тонкие линии по краям геометрии)
+        const wireframeMaterial = new THREE.MeshBasicMaterial({
+            color: 0x88aaff,
+            wireframe: true,
+            transparent: true,
+            opacity: 0.15
+        });
+        const wireframeMesh = new THREE.Mesh(geometry, wireframeMaterial);
+        scene.add(wireframeMesh);
+        
+        // --- Частицы-звезды вокруг ленты для создания магической атмосферы ---
+        const particleCount = 1800;
+        const particlesGeometry = new THREE.BufferGeometry();
+        const particlePositions = new Float32Array(particleCount * 3);
+        for (let i = 0; i < particleCount; i++) {
+            // Размещаем частицы в сферической области вокруг ленты
+            const radius = 1.8 + Math.random() * 1.2;
+            const theta = Math.random() * Math.PI * 2;
+            const phi = Math.acos(2 * Math.random() - 1);
+            const x = radius * Math.sin(phi) * Math.cos(theta);
+            const y = radius * Math.sin(phi) * Math.sin(theta) * 0.8; // сплюснем по Y
+            const z = radius * Math.cos(phi);
+            particlePositions[i*3] = x;
+            particlePositions[i*3+1] = y * 0.6;
+            particlePositions[i*3+2] = z;
+        }
+        particlesGeometry.setAttribute('position', new THREE.BufferAttribute(particlePositions, 3));
+        
+        const particleMaterial = new THREE.PointsMaterial({
+            color: 0x99ccff,
+            size: 0.025,
+            transparent: true,
+            blending: THREE.AdditiveBlending,
+            opacity: 0.7
+        });
+        const particles = new THREE.Points(particlesGeometry, particleMaterial);
+        scene.add(particles);
+        
+        // Дополнительно: маленькие сверкающие точки вдоль центральной линии ленты
+        const sparkleCount = 800;
+        const sparkleGeo = new THREE.BufferGeometry();
+        const sparklePositions = [];
+        for (let i = 0; i <= sparkleCount; i++) {
+            const u = (i / sparkleCount) * Math.PI * 2;
+            // центральная линия (v = 0)
+            const pos = mobiusPoint(u, 0);
+            sparklePositions.push(pos.x, pos.y, pos.z);
+        }
+        sparkleGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(sparklePositions), 3));
+        const sparkleMat = new THREE.PointsMaterial({
+            color: 0xffaa66,
+            size: 0.018,
+            transparent: true,
+            blending: THREE.AdditiveBlending
+        });
+        const sparkles = new THREE.Points(sparkleGeo, sparkleMat);
+        scene.add(sparkles);
+        
+        // --- Добавляем простой эффект туманного свечения: объемный свет (просто добавим несколько точечных источников, которые движутся)---
+        // Создадим вращающийся вокруг оси источник света для динамических бликов
+        const movingLight = new THREE.PointLight(0xff66aa, 0.8);
+        movingLight.distance = 4;
+        scene.add(movingLight);
+        
+        // Вторая вращающаяся лампа
+        const movingLight2 = new THREE.PointLight(0x33ccff, 0.6);
+        scene.add(movingLight2);
+        
+        // --- Простая фоновая "земля" или отражение? Добавим легкую полупрозрачную плоскость внизу для отражения бликов (не обязательно)---
+        const floorGlow = new THREE.Mesh(
+            new THREE.CircleGeometry(2.5, 16),
+            new THREE.MeshStandardMaterial({ color: 0x112233, roughness: 0.8, metalness: 0.2, transparent: true, opacity: 0.25, side: THREE.DoubleSide })
+        );
+        floorGlow.rotation.x = -Math.PI / 2;
+        floorGlow.position.y = -1.1;
+        scene.add(floorGlow);
+        
+        // --- CSS2D Текст с заголовком (парящий)---
+        const div = document.createElement('div');
+        div.textContent = '♾️ Лента Мёбиуса';
+        div.style.color = '#f0f0ff';
+        div.style.fontSize = '20px';
+        div.style.fontWeight = 'bold';
+        div.style.textShadow = '0 0 15px #ff44aa';
+        div.style.fontFamily = 'monospace';
+        div.style.background = 'rgba(0,0,0,0.5)';
+        div.style.padding = '6px 14px';
+        div.style.borderRadius = '30px';
+        div.style.backdropFilter = 'blur(8px)';
+        div.style.border = '1px solid rgba(255,100,150,0.6)';
+        div.style.pointerEvents = 'none';
+        const labelObj = new CSS2DObject(div);
+        labelObj.position.set(0, 1.2, 0);
+        scene.add(labelObj);
+        
+        // --- Анимация и обновление динамических элементов ---
+        let time = 0;
+        
+        function animate() {
+            requestAnimationFrame(animate);
+            time += 0.012;
+            
+            // Вращаем динамические источники света вокруг ленты
+            const angle = time * 0.8;
+            const radiusLight = 1.9;
+            movingLight.position.x = Math.cos(angle) * radiusLight;
+            movingLight.position.z = Math.sin(angle) * radiusLight;
+            movingLight.position.y = Math.sin(angle * 1.3) * 0.5;
+            
+            const angle2 = time * 0.6 + Math.PI;
+            movingLight2.position.x = Math.cos(angle2) * radiusLight * 0.9;
+            movingLight2.position.z = Math.sin(angle2) * radiusLight * 0.9;
+            movingLight2.position.y = Math.cos(angle2 * 1.8) * 0.6;
+            
+            // Меняем интенсивность цветного света для эффекта пульсации
+            colorLight.intensity = 0.5 + Math.sin(time * 2.3) * 0.25;
+            
+            // Вращаем частицы медленно вокруг оси Y для динамики
+            particles.rotation.y = time * 0.05;
+            particles.rotation.x = Math.sin(time * 0.2) * 0.1;
+            sparkles.rotation.y = time * 0.1;
+            
+            // Легкое изменение эмиссивной интенсивности материала
+            material.emissiveIntensity = 0.45 + Math.sin(time * 1.5) * 0.1;
+            
+            // Обновляем текстуру градиента для легкого "дыхания" цвета (необязательно, но эффектно)
+            if (Math.floor(time * 2) % 30 === 0) {
+                gradientTexture.needsUpdate = true;
+            }
+            
+            // Обновляем контролы (автовращение включено в OrbitControls)
+            controls.update(); // авто-вращение работает, если controls.autoRotate = true
+            
+            // Рендеринг
+            renderer.render(scene, camera);
+            labelRenderer.render(scene, camera);
+        }
+        
+        animate();
+        
+        // --- Адаптация под размер окна ---
+        window.addEventListener('resize', onWindowResize, false);
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            labelRenderer.setSize(window.innerWidth, window.innerHeight);
+        }
+        
+        // Небольшой лог в консоль
+        console.log('3D Лента Мёбиуса загружена | Three.js');
+    </script>
+</body>
+</html>
